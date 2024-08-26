@@ -435,8 +435,8 @@ Media.onStatus = function (id, msgType, value) {
  * Browser depends on `MediaRecorder` support
  */
 Media.isRecordSupported = function () {
-    return window.navigator.mediaDevices
-        && window.navigator.mediaDevices.getUserMedia;
+    return typeof window.navigator.mediaDevices !== 'undefined'
+        && typeof window.navigator.mediaDevices.getUserMedia !== 'undefined';
 };
 
 /**
