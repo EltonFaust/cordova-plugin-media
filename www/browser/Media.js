@@ -126,7 +126,7 @@ Media.MEDIA_MSG = ['None', 'Starting', 'Running', 'Paused', 'Stopped'];
  * Start or resume playing audio file.
  */
 Media.prototype.play = function () {
-    if (!playMode(this.id)) {
+    if (!Media.playMode(this.id)) {
         return;
     }
 
@@ -152,7 +152,7 @@ Media.prototype.play = function () {
  * Stop playing audio file.
  */
 Media.prototype.stop = function () {
-    if (!playMode(this.id)) {
+    if (!Media.playMode(this.id)) {
         return;
     }
 
@@ -169,7 +169,7 @@ Media.prototype.stop = function () {
  * Seek or jump to a new time in the track..
  */
 Media.prototype.seekTo = function (milliseconds) {
-    if (!playMode(this.id)) {
+    if (!Media.playMode(this.id)) {
         return;
     }
 
@@ -184,7 +184,7 @@ Media.prototype.seekTo = function (milliseconds) {
  * Pause playing audio file.
  */
 Media.prototype.pause = function () {
-    if (!playMode(this.id)) {
+    if (!Media.playMode(this.id)) {
         return;
     }
 
