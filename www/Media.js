@@ -274,6 +274,13 @@ Media.onStatus = function (id, msgType, value) {
     }
 };
 
+/**
+ * All native platforms support audio recording
+ */
+Media.isRecordSupported = function () {
+    return true;
+};
+
 module.exports = Media;
 
 function onMessageFromNative (msg) {

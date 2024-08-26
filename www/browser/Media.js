@@ -37,15 +37,22 @@ var mediaObjects = {};
  *                                  errorCallback(int errorCode) - OPTIONAL
  * @param statusCallback        The callback to be called when media status has changed.
  *                                  statusCallback(int statusCode) - OPTIONAL
+ *
+ * @param durationUpdateCallback  The callback to be called when the duration updates.
+ *                                durationUpdateCallback(float duration) - OPTIONAL
+ *
  */
-var Media = function (src, successCallback, errorCallback, statusCallback) {
+var Media = function (src, successCallback, errorCallback, statusCallback, durationUpdateCallback) {
     argscheck.checkArgs('SFFF', 'Media', arguments);
     this.id = utils.createUUID();
     mediaObjects[this.id] = this;
+    this.mode = Media.MODE_NONE;
     this.src = src;
     this.successCallback = successCallback;
     this.errorCallback = errorCallback;
     this.statusCallback = statusCallback;
+    this.durationUpdateCallback = durationUpdateCallback;
+    this.recorder = null;
     this._duration = -1;
     this._position = -1;
 
@@ -102,6 +109,11 @@ Media.MEDIA_DURATION = 2;
 Media.MEDIA_POSITION = 3;
 Media.MEDIA_ERROR = 9;
 
+// Media modes
+Media.MODE_NONE = 0;
+Media.MODE_PLAY = 1;
+Media.MODE_RECORD = 2;
+
 // Media states
 Media.MEDIA_NONE = 0;
 Media.MEDIA_STARTING = 1;
@@ -114,6 +126,10 @@ Media.MEDIA_MSG = ['None', 'Starting', 'Running', 'Paused', 'Stopped'];
  * Start or resume playing audio file.
  */
 Media.prototype.play = function () {
+    if (!playMode(this.id)) {
+        return;
+    }
+
     // if Media was released, then node will be null and we need to create it again
     if (!this.node) {
         try {
@@ -123,6 +139,10 @@ Media.prototype.play = function () {
                 code: MediaError.MEDIA_ERR_ABORTED
             });
         }
+    } else if (this.src && (!this.node.src || this.node.src !== this.src)) {
+        // changed de src value
+        this.node.src = this.src;
+        this.node.load();
     }
 
     this.node.play();
@@ -132,6 +152,10 @@ Media.prototype.play = function () {
  * Stop playing audio file.
  */
 Media.prototype.stop = function () {
+    if (!playMode(this.id)) {
+        return;
+    }
+
     try {
         this.pause();
         this.seekTo(0);
@@ -145,6 +169,10 @@ Media.prototype.stop = function () {
  * Seek or jump to a new time in the track..
  */
 Media.prototype.seekTo = function (milliseconds) {
+    if (!playMode(this.id)) {
+        return;
+    }
+
     try {
         this.node.currentTime = milliseconds / 1000;
     } catch (err) {
@@ -156,6 +184,10 @@ Media.prototype.seekTo = function (milliseconds) {
  * Pause playing audio file.
  */
 Media.prototype.pause = function () {
+    if (!playMode(this.id)) {
+        return;
+    }
+
     try {
         this.node.pause();
         Media.onStatus(this.id, Media.MEDIA_STATE, Media.MEDIA_PAUSED);
@@ -171,6 +203,11 @@ Media.prototype.pause = function () {
  * @return      duration or -1 if not known.
  */
 Media.prototype.getDuration = function () {
+    // Can't get duration of recording
+    if (this.recorder !== null) {
+        return -2;
+    }
+
     return this._duration;
 };
 
@@ -191,21 +228,98 @@ Media.prototype.getCurrentPosition = function (success, fail) {
  * Start recording audio file.
  */
 Media.prototype.startRecord = function () {
-    Media.onStatus(this.id, Media.MEDIA_ERROR, 'Not supported');
+    if (!Media.isRecordSupported()) {
+        Media.onStatus(this.id, Media.MEDIA_ERROR, 'Not supported');
+        return;
+    }
+
+    switch (this.mode) {
+    case Media.MODE_PLAY:
+        Media.onStatus(this.id, Media.MEDIA_ERROR, {
+            code: MediaError.MEDIA_ERR_ABORTED,
+            message: 'Error: Can\'t record in play mode.',
+        });
+        break;
+    case Media.MODE_NONE:
+        var _that = this;
+        window.navigator.mediaDevices.getUserMedia({ audio: true })
+            .then(function (stream) {
+                return new MediaRecorder(stream, { /* mimeType: 'audio/webm', */ audioBitsPerSecond: 96000 })
+            }).then(function (recorder) {
+                var chunks = [];
+
+                recorder.ondataavailable = function (e) {
+                    chunks.push(e.data);
+                };
+
+                recorder.onstart = function () {
+                    Media.onStatus(_that.id, Media.MEDIA_STATE, Media.MEDIA_RUNNING);
+                };
+
+                recorder.onresume = function () {
+                    Media.onStatus(_that.id, Media.MEDIA_STATE, Media.MEDIA_RUNNING);
+                };
+
+                recorder.onpause = function () {
+                    Media.onStatus(_that.id, Media.MEDIA_STATE, Media.MEDIA_PAUSED);
+                };
+
+                recorder.onstop = function () {
+                    if (_that.recorder) {
+                        _that.src = URL.createObjectURL(new Blob(chunks, { /* type: 'audio/webm' */ }));
+                        _that._duration = -1;
+                        _that._position = -1;
+                        _that.recorder = null;
+                    }
+
+                    // no longer needed
+                    recorder.stream.getTracks().forEach(function (track) {
+                        if (track.readyState === 'live') {
+                            track.stop();
+                        }
+                    });
+
+                    _that.mode = Media.MODE_NONE;
+
+                    Media.onStatus(_that.id, Media.MEDIA_STATE, Media.MEDIA_STOPPED);
+                };
+
+                _that.mode = Media.MODE_RECORD;
+                _that.recorder = recorder;
+                _that.recorder.start();
+            }).catch(function (e) {
+                Media.onStatus(_that.id, Media.MEDIA_ERROR, {
+                    code: MediaError.MEDIA_ERR_ABORTED,
+                    message: 'Error: Can\'t start record. ' + e.message,
+                });
+            });
+
+        // sendErrorStatus(MEDIA_ERR_ABORTED, null);
+        break;
+    case Media.MODE_RECORD:
+        Media.onStatus(this.id, Media.MEDIA_ERROR, {
+            code: MediaError.MEDIA_ERR_ABORTED,
+            message: 'Error: Already recording.',
+        });
+    }
 };
 
 /**
  * Stop recording audio file.
  */
 Media.prototype.stopRecord = function () {
-    Media.onStatus(this.id, Media.MEDIA_ERROR, 'Not supported');
+    if (this.recorder) {
+        this.recorder.stop();
+    }
 };
 
 /**
  * Pause recording audio file.
  */
 Media.prototype.pauseRecord = function () {
-    Media.onStatus(this.id, Media.MEDIA_ERROR, 'Not supported');
+    if (this.recorder && this.recorder.state === 'recording') {
+        this.recorder.pause();
+    }
 };
 
 /**
@@ -219,7 +333,11 @@ Media.prototype.getCurrentAmplitude = function () {
  * Resume recording an audio file.
  */
 Media.prototype.resumeRecord = function () {
-    Media.onStatus(this.id, Media.MEDIA_ERROR, 'Not supported');
+    if (this.recorder !== null) {
+        this.recorder.resume();
+    } else {
+        this.startRecord();
+    }
 };
 
 /**
@@ -237,6 +355,24 @@ Media.prototype.release = function () {
         delete this.node;
     } catch (err) {
         Media.onStatus(this.id, Media.MEDIA_ERROR, err);
+    }
+
+    if (this.recorder) {
+        // remove any blob created from memory
+        if (
+            this.recorder.src
+            && this.recorder.src.substr(0, 5) === 'blob:'
+        ) {
+            URL.revokeObjectURL(this.recorder.src);
+        }
+
+        var _recorder = this.recorder;
+
+        delete this.recorder;
+
+        if (_recorder.state === 'recording') {
+            _recorder.stop();
+        }
     }
 };
 
@@ -272,6 +408,9 @@ Media.onStatus = function (id, msgType, value) {
             break;
         case Media.MEDIA_DURATION:
             media._duration = value;
+            if (media.durationUpdateCallback) {
+                media.durationUpdateCallback(value);
+            }
             break;
         case Media.MEDIA_ERROR:
             if (media.errorCallback) {
@@ -290,6 +429,47 @@ Media.onStatus = function (id, msgType, value) {
     } else if (console.error) {
         console.error('Received Media.onStatus callback for unknown media :: ' + id);
     }
+};
+
+/**
+ * Browser depends on `MediaRecorder` support
+ */
+Media.isRecordSupported = function () {
+    return window.navigator.mediaDevices
+        && window.navigator.mediaDevices.getUserMedia;
+};
+
+/**
+ * attempts to put the player in play mode
+ * @return true if in playmode, false otherwise
+ */
+Media.playMode = function (id) {
+    var media = mediaObjects[id];
+
+    if (media) {
+        switch (media.mode) {
+        case Media.MODE_NONE:
+            media.mode = Media.MODE_PLAY;
+            return true;
+        case Media.MODE_PLAY:
+            return true;
+        case Media.MODE_RECORD:
+            Media.onStatus(id, Media.MEDIA_ERROR, {
+                code: MediaError.MEDIA_ERR_ABORTED,
+                message: 'Error: Can\'t play in record mode.',
+            });
+            return false;
+        default:
+            if (console.error) {
+                console.error('Unhandled Media.playMode :: ' + media.mode);
+            }
+            break;
+        }
+    } else if (console.error) {
+        console.error('Call Media.playMode for unknown media :: ' + id);
+    }
+
+    return false;
 };
 
 module.exports = Media;
