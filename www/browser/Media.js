@@ -358,14 +358,6 @@ Media.prototype.release = function () {
     }
 
     if (this.recorder) {
-        // remove any blob created from memory
-        if (
-            this.recorder.src
-            && this.recorder.src.substr(0, 5) === 'blob:'
-        ) {
-            URL.revokeObjectURL(this.recorder.src);
-        }
-
         var _recorder = this.recorder;
 
         delete this.recorder;
