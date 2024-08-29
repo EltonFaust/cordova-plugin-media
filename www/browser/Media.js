@@ -43,7 +43,7 @@ var mediaObjects = {};
  *
  */
 var Media = function (src, successCallback, errorCallback, statusCallback, durationUpdateCallback) {
-    argscheck.checkArgs('SFFF', 'Media', arguments);
+    argscheck.checkArgs('SFFFF', 'Media', arguments);
     this.id = utils.createUUID();
     mediaObjects[this.id] = this;
     this.mode = Media.MODE_NONE;
@@ -249,10 +249,7 @@ Media.prototype.stop = function () {
         this.node.currentTime = 0;
         setState(this, Media.MEDIA_STOPPED);
     } else {
-        Media.onStatus(this.id, Media.MEDIA_ERROR, {
-            code: MediaError.MEDIA_ERR_NONE_ACTIVE,
-            message: 'Error: stop() called during invalid state: ' + this.state,
-        });
+        sendErrorStatus(this.id, MediaError.MEDIA_ERR_NONE_ACTIVE, 'Error: stop() called during invalid state: ' + this.state);
     }
 };
 
@@ -281,10 +278,7 @@ Media.prototype.pause = function () {
         this.node.pause();
         setState(this, Media.MEDIA_PAUSED);
     } else {
-        Media.onStatus(this.id, Media.MEDIA_ERROR, {
-            code: MediaError.MEDIA_ERR_NONE_ACTIVE,
-            message: 'Error: pause() called during invalid state: ' + this.state,
-        });
+        sendErrorStatus(this.id, MediaError.MEDIA_ERR_NONE_ACTIVE, 'Error: pause() called during invalid state: ' + this.state);
     }
 };
 
@@ -323,22 +317,111 @@ Media.prototype.getCurrentPosition = function (success, fail) {
  */
 Media.prototype.startRecord = function () {
     if (!Media.isRecordSupported()) {
-        Media.onStatus(this.id, Media.MEDIA_ERROR, 'Not supported');
+        sendErrorStatus(this.id, MediaError.MEDIA_ERR_ABORTED, 'Error: Record is not supported in this device.');
         return;
     }
 
     switch (this.mode) {
     case Media.MODE_PLAY:
-        Media.onStatus(this.id, Media.MEDIA_ERROR, {
-            code: MediaError.MEDIA_ERR_ABORTED,
-            message: 'Error: Can\'t record in play mode.',
-        });
+        sendErrorStatus(this.id, MediaError.MEDIA_ERR_ABORTED, 'Error: Can\'t record in play mode.');
         break;
     case Media.MODE_NONE:
         var _that = this;
+        var src = this.src && this.src.substr(0, 5) !== 'blob:' ? this.src : false;
+
+        var fileSystemPaths;
+
+        try {
+            // currently only available on chrome
+            if (
+                window.webkitRequestFileSystem
+                && window.webkitResolveLocalFileSystemURL
+            ) {
+                // if the plugin `cordova-plugin-file` is available, will try to save the file
+                fileSystemPaths = require('cordova-plugin-file.fileSystemPaths').file;
+            } else {
+                fileSystemPaths = null;
+            }
+        } catch (e) {
+            fileSystemPaths = null;
+        }
+
+        var recordFile;
+
+        if (src) {
+            if (fileSystemPaths) {
+                // once is generated the url, it will be replaced the `file:///` with the a `cordova.file.applicationDirectory` (aka window.location.origin),
+                // to be able to re-record, mantaining the original file name, replace back the string
+                recordFile = src.replace(fileSystemPaths.applicationDirectory, 'file:///');
+
+                // only can save files to valid `temporary` and `persistent` directories
+                if (
+                    recordFile.indexOf(':') !== -1
+                    && recordFile.indexOf(fileSystemPaths.cacheDirectory) === -1
+                    && recordFile.indexOf(fileSystemPaths.dataDirectory) === -1
+                ) {
+                    sendErrorStatus(this.id, MediaError.MEDIA_ERR_ABORTED, 'Error: Resource for recording can only be saved at cordova.file.cacheDirectory or cordova.file.dataDirectory.');
+                    return;
+                }
+            } else {
+                recordFile = src;
+            }
+        } else {
+            recordFile = false;
+        }
+
+        var useMimeType = this._recordFileMime;
+
+        if (recordFile) {
+            // get the mime based on the file extension
+            var ext = recordFile.split('/').pop().split('.').slice(-2)[1] || '';
+
+            switch (ext.toLowerCase()) {
+            case 'webm':
+                useMimeType = 'audio/webm';
+                break;
+            case 'mp4':
+            case 'm4a':
+                useMimeType = 'audio/mp4';
+                break;
+            case 'ogg':
+                useMimeType = 'audio/ogg';
+                break;
+            case '':
+                // no extension is provided
+                useMimeType = this._recordFileMime || false;
+                break;
+            }
+
+            if (useMimeType === false) {
+                // no file extension, use de default, with `audio/webm` as priority
+                if (window.MediaRecorder.isTypeSupported('audio/webm')) {
+                    useMimeType = 'audio/webm';
+                } else {
+                    useMimeType = undefined;
+                }
+            } else if (!useMimeType) {
+                sendErrorStatus(this.id, MediaError.MEDIA_ERR_ABORTED, 'Error: Resource for recording must have webm/mp4/m4a/ogg extension');
+                return;
+            } else if (!window.MediaRecorder.isTypeSupported(useMimeType)) {
+                sendErrorStatus(this.id, MediaError.MEDIA_ERR_ABORTED, 'Error: Resource for recording with unavailable mime type: ' + useMimeType);
+                return;
+            }
+        } else if (!useMimeType && window.MediaRecorder.isTypeSupported('audio/webm')) {
+            // fallback to audio/webm
+            useMimeType = 'audio/webm';
+        }
+
+        this._recordFileMime = useMimeType;
+
+        // no url defined, src used only to determine mime type
+        if (recordFile.indexOf(':') === -1) {
+            recordFile = false;
+        }
+
         window.navigator.mediaDevices.getUserMedia({ audio: true })
             .then(function (stream) {
-                return new MediaRecorder(stream, { /* mimeType: 'audio/webm', */ audioBitsPerSecond: 96000 })
+                return new window.MediaRecorder(stream, { mimeType: useMimeType, audioBitsPerSecond: 96000 })
             }).then(function (recorder) {
                 var chunks = [];
 
@@ -359,13 +442,6 @@ Media.prototype.startRecord = function () {
                 };
 
                 recorder.onstop = function () {
-                    if (_that.recorder) {
-                        _that.src = URL.createObjectURL(new Blob(chunks, { /* type: 'audio/webm' */ }));
-                        _that._duration = -1;
-                        _that._position = -1;
-                        _that.recorder = null;
-                    }
-
                     // no longer needed
                     recorder.stream.getTracks().forEach(function (track) {
                         if (track.readyState === 'live') {
@@ -373,29 +449,82 @@ Media.prototype.startRecord = function () {
                         }
                     });
 
-                    setState(_that, Media.MEDIA_STOPPED);
+                    // if was released there is no need to save the file
+                    if (!_that.recorder) {
+                        return;
+                    }
 
-                    _that.mode = Media.MODE_NONE;
-                    _that.state = Media.MEDIA_NONE;
+                    var content = new Blob(chunks, { type: useMimeType });
+
+                    function finish() {
+                        _that._duration = -1;
+                        _that._position = -1;
+                        _that.recorder = null;
+
+                        setState(_that, Media.MEDIA_STOPPED);
+
+                        _that.mode = Media.MODE_NONE;
+                        _that.state = Media.MEDIA_NONE;
+                    }
+
+                    function finishAsBlob() {
+                        _that.src = window.URL.createObjectURL(content);
+                        finish();
+                    }
+
+                    // plugin `cordova-plugin-file` is not available, save as a `blob:` file
+                    if (!fileSystemPaths || !recordFile) {
+                        finishAsBlob();
+                        return;
+                    }
+
+                    var localFileSystem = require('cordova-plugin-file.LocalFileSystem');
+                    var useFileSystem = recordFile.indexOf(fileSystemPaths.cacheDirectory) !== -1 ? localFileSystem.TEMPORARY : localFileSystem.PERSISTENT;
+                    var fileName = recordFile.substr(useFileSystem === localFileSystem.TEMPORARY ? fileSystemPaths.cacheDirectory.length -1 : fileSystemPaths.dataDirectory.length -1);
+
+                    window.requestFileSystem(
+                        useFileSystem, 0,
+                        function (fs) {
+                            fs.root.getFile(
+                                fileName,
+                                { create: true, exclusive: false },
+                                function (fileEntry) {
+                                    fileEntry.createWriter(function (fileWriter) {
+                                        fileWriter.onwriteend = function () {
+                                            _that.src = fileEntry.toURL();
+                                            finish();
+                                        };
+
+                                        fileWriter.onerror = function (e) {
+                                            console.log('Failed to write file, auto fallback to blob url: ' + e.message);
+                                            finishAsBlob();
+                                        };
+
+                                        fileWriter.write(content);
+                                    });
+                                },
+                                function (e) {
+                                    console.log('Failed to get file, auto fallback to blob url: ' + e.message);
+                                    finishAsBlob();
+                                },
+                            );
+                        },
+                        function (e) {
+                            console.log('Failed to request file system, auto fallback to blob url: ' + e.message);
+                            finishAsBlob();
+                        },
+                    );
                 };
 
                 _that.mode = Media.MODE_RECORD;
                 _that.recorder = recorder;
                 _that.recorder.start();
             }).catch(function (e) {
-                Media.onStatus(_that.id, Media.MEDIA_ERROR, {
-                    code: MediaError.MEDIA_ERR_ABORTED,
-                    message: 'Error: Can\'t start record. ' + e.message,
-                });
+                sendErrorStatus(_that.id, MediaError.MEDIA_ERR_ABORTED, 'Error: Can\'t start record. ' + e.message);
             });
-
-        // sendErrorStatus(MEDIA_ERR_ABORTED, null);
         break;
     case Media.MODE_RECORD:
-        Media.onStatus(this.id, Media.MEDIA_ERROR, {
-            code: MediaError.MEDIA_ERR_ABORTED,
-            message: 'Error: Already recording.',
-        });
+        sendErrorStatus(this.id, MediaError.MEDIA_ERR_ABORTED, 'Error: Already recording.');
     }
 };
 
@@ -454,7 +583,7 @@ Media.prototype.release = function () {
     if (this.recorder) {
         var _recorder = this.recorder;
 
-        delete this.recorder;
+        this.recorder = null;
 
         if (_recorder.state === 'recording') {
             _recorder.stop();
