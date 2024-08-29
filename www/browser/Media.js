@@ -47,22 +47,16 @@ var Media = function (src, successCallback, errorCallback, statusCallback, durat
     this.id = utils.createUUID();
     mediaObjects[this.id] = this;
     this.mode = Media.MODE_NONE;
+    this.state = Media.MEDIA_NONE;
     this.src = src;
     this.successCallback = successCallback;
     this.errorCallback = errorCallback;
     this.statusCallback = statusCallback;
     this.durationUpdateCallback = durationUpdateCallback;
+    this.node = null;
     this.recorder = null;
     this._duration = -1;
     this._position = -1;
-
-    try {
-        this.node = createNode(this);
-    } catch (err) {
-        Media.onStatus(this.id, Media.MEDIA_ERROR, {
-            code: MediaError.MEDIA_ERR_ABORTED
-        });
-    }
 };
 
 /**
@@ -73,16 +67,13 @@ var Media = function (src, successCallback, errorCallback, statusCallback, durat
 function createNode (media) {
     var node = new Audio();
 
-    node.onplay = function () {
-        Media.onStatus(media.id, Media.MEDIA_STATE, Media.MEDIA_STARTING);
-    };
-
     node.onplaying = function () {
-        Media.onStatus(media.id, Media.MEDIA_STATE, Media.MEDIA_RUNNING);
+        setState(media, Media.MEDIA_RUNNING);
     };
 
     node.ondurationchange = function (e) {
-        Media.onStatus(media.id, Media.MEDIA_DURATION, e.target.duration || -1);
+        var duration = typeof e.target.duration === 'number' && Number.isFinite(e.target.duration) ? e.target.duration : -1;
+        Media.onStatus(media.id, Media.MEDIA_DURATION, duration);
     };
 
     node.onerror = function (e) {
@@ -93,14 +84,127 @@ function createNode (media) {
     };
 
     node.onended = function () {
-        Media.onStatus(media.id, Media.MEDIA_STATE, Media.MEDIA_STOPPED);
+        setState(media, Media.MEDIA_STOPPED);
     };
 
-    if (media.src) {
-        node.src = media.src;
+    return node;
+}
+
+/**
+ * Set the state and send it to JavaScript.
+ *
+ * @param state
+ */
+function setState(media, state) {
+    if (media.state != state) {
+        Media.onStatus(media.id, Media.MEDIA_STATE, state);
     }
 
-    return node;
+    media.state = state;
+}
+
+/**
+ * attempts to put the player in play mode
+ * @return true if in playmode, false otherwise
+ */
+function playMode(media) {
+    switch (media.mode) {
+    case Media.MODE_NONE:
+        media.mode = Media.MODE_PLAY;
+        return true;
+    case Media.MODE_PLAY:
+        return true;
+    case Media.MODE_RECORD:
+        sendErrorStatus(id, MediaError.MEDIA_ERR_ABORTED, 'Error: Can\'t play in record mode.');
+        return false;
+    default:
+        if (console.error) {
+            console.error('Unhandled playMode :: ' + media.mode);
+        }
+        break;
+    }
+
+    return false;
+}
+
+/**
+ * attempts to initialize the media player for playback
+ * @return false if player not ready, reports if in wrong mode or state
+ */
+function readyPlayer (media) {
+    if (!playMode(media)) {
+        return false;
+    }
+
+    switch (media.state) {
+        case Media.MEDIA_NONE:
+            try {
+                media.node = createNode(media);
+            } catch (err) {
+                sendErrorStatus(id, MediaError.MEDIA_ERR_ABORTED);
+                return false;
+            }
+
+            try {
+                loadAudioFile(media);
+            } catch (e) {
+                sendErrorStatus(id, MediaError.MEDIA_ERR_ABORTED, e.message);
+                return false;
+            }
+
+            return true;
+        case Media.MEDIA_LOADING:
+            return false;
+        case Media.MEDIA_STARTING:
+        case Media.MEDIA_RUNNING:
+        case Media.MEDIA_PAUSED:
+            return true;
+        case Media.MEDIA_STOPPED:
+            // check if the src was changed, if changed, recreate the node
+            if (media.node && media.node.src != media.src) {
+                media.node.pause();
+                media.node = null;
+                media.duration = -1;
+            }
+
+            if (media.node === null) {
+                try {
+                    media.node = createNode(media);
+                } catch (err) {
+                    sendErrorStatus(id, MediaError.MEDIA_ERR_ABORTED);
+                    return false;
+                }
+
+                try {
+                    loadAudioFile(media);
+                } catch (e) {
+                    sendErrorStatus(id, MediaError.MEDIA_ERR_ABORTED, e.message);
+                    return false;
+                }
+            }
+
+            return true;
+        default:
+            sendErrorStatus(id, MediaError.MEDIA_ERR_ABORTED, 'Error: readyPlayer() called during invalid state: ' + media.state);
+    }
+}
+
+function loadAudioFile(media) {
+    if (!media.src) {
+        throw new Error('Error: no source provided');
+    }
+
+    media.node.src = media.src;
+    media.node.load();
+
+    setState(media, Media.MEDIA_STARTING);
+}
+
+function sendErrorStatus(id, code, message) {
+    Media.onStatus(id, Media.MEDIA_ERROR, {
+        code: code,
+        message: message,
+    });
 }
 
 // Media messages
@@ -126,23 +230,8 @@ Media.MEDIA_MSG = ['None', 'Starting', 'Running', 'Paused', 'Stopped'];
  * Start or resume playing audio file.
  */
 Media.prototype.play = function () {
-    if (!Media.playMode(this.id)) {
+    if (!readyPlayer(this)) {
         return;
-    }
-
-    // if Media was released, then node will be null and we need to create it again
-    if (!this.node) {
-        try {
-            this.node = createNode(this);
-        } catch (err) {
-            Media.onStatus(this.id, Media.MEDIA_ERROR, {
-                code: MediaError.MEDIA_ERR_ABORTED
-            });
-        }
-    } else if (this.src && (!this.node.src || this.node.src !== this.src)) {
-        // changed de src value
-        this.node.src = this.src;
-        this.node.load();
     }
 
     this.node.play();
@@ -152,16 +241,18 @@ Media.prototype.play = function () {
  * Stop playing audio file.
  */
 Media.prototype.stop = function () {
-    if (!Media.playMode(this.id)) {
-        return;
-    }
-
-    try {
-        this.pause();
-        this.seekTo(0);
-        Media.onStatus(this.id, Media.MEDIA_STATE, Media.MEDIA_STOPPED);
-    } catch (err) {
-        Media.onStatus(this.id, Media.MEDIA_ERROR, err);
+    if (
+        this.node
+        && (this.state === Media.MEDIA_RUNNING || this.state === Media.MEDIA_PAUSED)
+    ) {
+        this.node.pause();
+        this.node.currentTime = 0;
+        setState(this, Media.MEDIA_STOPPED);
+    } else {
+        Media.onStatus(this.id, Media.MEDIA_ERROR, {
+            code: MediaError.MEDIA_ERR_NONE_ACTIVE,
+            message: 'Error: stop() called during invalid state: ' + this.state,
+        });
     }
 };
 
@@ -169,12 +260,14 @@ Media.prototype.stop = function () {
  * Seek or jump to a new time in the track..
  */
 Media.prototype.seekTo = function (milliseconds) {
-    if (!Media.playMode(this.id)) {
+    if (!readyPlayer(this)) {
         return;
     }
 
     try {
-        this.node.currentTime = milliseconds / 1000;
+        var p = milliseconds / 1000;
+        this.node.currentTime = p;
+        Media.onStatus(this.id, Media.MEDIA_POSITION, p);
     } catch (err) {
         Media.onStatus(this.id, Media.MEDIA_ERROR, err);
     }
@@ -184,15 +277,14 @@ Media.prototype.seekTo = function (milliseconds) {
  * Pause playing audio file.
  */
 Media.prototype.pause = function () {
-    if (!Media.playMode(this.id)) {
-        return;
-    }
-
-    try {
+    if (this.state === Media.MEDIA_RUNNING && this.node) {
         this.node.pause();
-        Media.onStatus(this.id, Media.MEDIA_STATE, Media.MEDIA_PAUSED);
-    } catch (err) {
-        Media.onStatus(this.id, Media.MEDIA_ERROR, err);
+        setState(this, Media.MEDIA_PAUSED);
+    } else {
+        Media.onStatus(this.id, Media.MEDIA_ERROR, {
+            code: MediaError.MEDIA_ERR_NONE_ACTIVE,
+            message: 'Error: pause() called during invalid state: ' + this.state,
+        });
     }
 };
 
@@ -200,7 +292,9 @@ Media.prototype.pause = function () {
  * Get duration of an audio file.
  * The duration is only set for audio that is playing, paused or stopped.
  *
- * @return      duration or -1 if not known.
+ * @return      duration or
+ *                  -1=can't be determined
+ *                  -2=not allowed
  */
 Media.prototype.getDuration = function () {
     // Can't get duration of recording
@@ -253,15 +347,15 @@ Media.prototype.startRecord = function () {
                 };
 
                 recorder.onstart = function () {
-                    Media.onStatus(_that.id, Media.MEDIA_STATE, Media.MEDIA_RUNNING);
+                    setState(_that,  Media.MEDIA_RUNNING);
                 };
 
                 recorder.onresume = function () {
-                    Media.onStatus(_that.id, Media.MEDIA_STATE, Media.MEDIA_RUNNING);
+                    setState(_that,  Media.MEDIA_RUNNING);
                 };
 
                 recorder.onpause = function () {
-                    Media.onStatus(_that.id, Media.MEDIA_STATE, Media.MEDIA_PAUSED);
+                    setState(_that,  Media.MEDIA_PAUSED);
                 };
 
                 recorder.onstop = function () {
@@ -279,9 +373,10 @@ Media.prototype.startRecord = function () {
                         }
                     });
 
-                    _that.mode = Media.MODE_NONE;
+                    setState(_that, Media.MEDIA_STOPPED);
 
-                    Media.onStatus(_that.id, Media.MEDIA_STATE, Media.MEDIA_STOPPED);
+                    _that.mode = Media.MODE_NONE;
+                    _that.state = Media.MEDIA_NONE;
                 };
 
                 _that.mode = Media.MODE_RECORD;
@@ -351,10 +446,9 @@ Media.prototype.setRate = function () {
  * Release the resources.
  */
 Media.prototype.release = function () {
-    try {
-        delete this.node;
-    } catch (err) {
-        Media.onStatus(this.id, Media.MEDIA_ERROR, err);
+    if (this.node) {
+        this.node.pause();
+        this.node = null;
     }
 
     if (this.recorder) {
@@ -372,7 +466,14 @@ Media.prototype.release = function () {
  * Adjust the volume.
  */
 Media.prototype.setVolume = function (volume) {
-    this.node.volume = volume;
+    if (this.node) {
+        this.node.volume = volume;
+    } else {
+        Media.onStatus(this.id, Media.MEDIA_ERROR, {
+            code: MediaError.MEDIA_ERR_NONE_ACTIVE,
+            message: 'Error: Cannot set volume until the audio file is initialized.',
+        });
+    }
 };
 
 /**
@@ -386,40 +487,44 @@ Media.prototype.setVolume = function (volume) {
 Media.onStatus = function (id, msgType, value) {
     var media = mediaObjects[id];
 
-    if (media) {
-        switch (msgType) {
-        case Media.MEDIA_STATE:
-            if (media.statusCallback) {
-                media.statusCallback(value);
-            }
-            if (value === Media.MEDIA_STOPPED) {
-                if (media.successCallback) {
-                    media.successCallback();
-                }
-            }
-            break;
-        case Media.MEDIA_DURATION:
-            media._duration = value;
-            if (media.durationUpdateCallback) {
-                media.durationUpdateCallback(value);
-            }
-            break;
-        case Media.MEDIA_ERROR:
-            if (media.errorCallback) {
-                media.errorCallback(value);
-            }
-            break;
-        case Media.MEDIA_POSITION:
-            media._position = Number(value);
-            break;
-        default:
-            if (console.error) {
-                console.error('Unhandled Media.onStatus :: ' + msgType);
-            }
-            break;
+    if (!media) {
+        if (console.error) {
+            console.error('Received Media.onStatus callback for unknown media :: ' + id);
         }
-    } else if (console.error) {
-        console.error('Received Media.onStatus callback for unknown media :: ' + id);
+
+        return;
+    }
+
+    switch (msgType) {
+    case Media.MEDIA_STATE:
+        if (media.statusCallback) {
+            media.statusCallback(value);
+        }
+        if (value === Media.MEDIA_STOPPED) {
+            if (media.successCallback) {
+                media.successCallback();
+            }
+        }
+        break;
+    case Media.MEDIA_DURATION:
+        media._duration = value;
+        if (media.durationUpdateCallback) {
+            media.durationUpdateCallback(value);
+        }
+        break;
+    case Media.MEDIA_ERROR:
+        if (media.errorCallback) {
+            media.errorCallback(value);
+        }
+        break;
+    case Media.MEDIA_POSITION:
+        media._position = Number(value);
+        break;
+    default:
+        if (console.error) {
+            console.error('Unhandled Media.onStatus :: ' + msgType);
+        }
+        break;
     }
 };
 
@@ -429,39 +534,6 @@ Media.onStatus = function (id, msgType, value) {
 Media.isRecordSupported = function () {
     return typeof window.navigator.mediaDevices !== 'undefined'
         && typeof window.navigator.mediaDevices.getUserMedia !== 'undefined';
-};
-
-/**
- * attempts to put the player in play mode
- * @return true if in playmode, false otherwise
- */
-Media.playMode = function (id) {
-    var media = mediaObjects[id];
-
-    if (media) {
-        switch (media.mode) {
-        case Media.MODE_NONE:
-            media.mode = Media.MODE_PLAY;
-            return true;
-        case Media.MODE_PLAY:
-            return true;
-        case Media.MODE_RECORD:
-            Media.onStatus(id, Media.MEDIA_ERROR, {
-                code: MediaError.MEDIA_ERR_ABORTED,
-                message: 'Error: Can\'t play in record mode.',
-            });
-            return false;
-        default:
-            if (console.error) {
-                console.error('Unhandled Media.playMode :: ' + media.mode);
-            }
-            break;
-        }
-    } else if (console.error) {
-        console.error('Call Media.playMode for unknown media :: ' + id);
-    }
-
-    return false;
 };
 
 module.exports = Media;
