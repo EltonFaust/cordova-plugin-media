@@ -297,6 +297,7 @@ Pauses recording an audio file.
 ### Supported Platforms
 
 - iOS
+- Browser
 
 
 ### Quick Example
@@ -415,6 +416,7 @@ Resume recording an audio file.
 ### Supported Platforms
 
 - iOS
+- Browser
 
 
 ### Quick Example
@@ -531,6 +533,7 @@ Starts recording an audio file.
 
 - Android
 - iOS
+- Browser
 
 ### Quick Example
 
@@ -584,6 +587,55 @@ To add this entry into the `info.plist`, you can use the `edit-config` tag in th
 </edit-config>
 ```
 
+### Browser Quirks
+
+- The record capabillity depends on the user's browser, it may or may not allow recordings and has any input device available, its capabillities can be checked:
+
+        Media.isRecordSupported(function (canRecord) {
+            console.log("Is record supported? " + (canRecord ? "true" : "false"));
+        });
+
+- The `src` property will be update if needed after the record finishes.
+
+- If the `src` property is omited (eg: `"src": null`), it will fallback to record with the mime the browser chooses, in this case the `src` will be update to an `blob:something`.
+
+- If the `src` is a simple file (eg: `"src": "my_record.m4a"`), it will fallback to `blob:` but will try to record it as an `audio/mp4`
+    - The extension on the file will force an mime type tha can be: `.webm = audio/webm` , `.mp4/.m4a = audio/mp4` or `.ogg = audio/ogg`.
+    - If no extension is provided, it will fallback to the mime type `audio/webm` or the browser choice if `audio/webm` is not available.
+
+- If the `src` is a full path (eg: `cordova.file.cacheDirectory + "my_record.m4a"` or `cordova.file.dataDirectory + "my_record.m4a"`) and the plugin `cordova-plugin-file` is available, it will try to save the file.
+    - If is provided an non compatible path, it wont be able to record.
+    - If is available to save the file, but fail to do so, it will fallback to `blob:`.
+
+- The plugin `cordova-plugin-file-transfer` can be used, but it doesn't support `blob:` path files, yet it can be sent to a server, but only manually:
+        if (myMedia.src.substr(0, 5) === 'blob:') {
+            // first we get the blob: file content
+            fetch(myMedia.src).then(function (response) {
+                return respose.blob();
+            }).then(function (blobContent) {
+                // then send it
+                var requestData = new FormData();
+                requestData.append('file', blobContent, 'my_record.webm');
+
+                fetch(
+                    'http://some.server.com/upload.php',
+                    { method: 'POST', body: requestData }
+                ).then(function (response) {
+                    // do something with the response
+                })
+            });
+
+            return;
+        } else {
+            var ft = new FileTransfer();
+            var options = new FileUploadOptions();
+            options.fileKey = "file";
+            options.fileName = 'my_record.webm';
+            options.mimeType = "audio/webm";
+
+            ft.upload(myMedia.src, encodeURI("http://some.server.com/upload.php"), win, fail, options);
+        }
+
 ## media.stop
 
 Stops playing an audio file.
@@ -628,6 +680,7 @@ Stops recording an audio file.
 
 - Android
 - iOS
+- Browser
 
 ### Quick Example
 
