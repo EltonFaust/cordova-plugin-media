@@ -131,7 +131,7 @@ function playMode(media) {
  * attempts to initialize the media player for playback
  * @return false if player not ready, reports if in wrong mode or state
  */
-function readyPlayer (media) {
+function readyPlayer(media) {
     if (!playMode(media)) {
         return false;
     }
@@ -241,10 +241,7 @@ Media.prototype.play = function () {
  * Stop playing audio file.
  */
 Media.prototype.stop = function () {
-    if (
-        this.node
-        && (this.state === Media.MEDIA_RUNNING || this.state === Media.MEDIA_PAUSED)
-    ) {
+    if (this.node && (this.state === Media.MEDIA_RUNNING || this.state === Media.MEDIA_PAUSED)) {
         this.node.pause();
         this.node.currentTime = 0;
         setState(this, Media.MEDIA_STOPPED);
@@ -333,10 +330,7 @@ Media.prototype.startRecord = function () {
 
         try {
             // currently only available on chrome
-            if (
-                window.webkitRequestFileSystem
-                && window.webkitResolveLocalFileSystemURL
-            ) {
+            if (window.webkitRequestFileSystem && window.webkitResolveLocalFileSystemURL) {
                 // if the plugin `cordova-plugin-file` is available, will try to save the file
                 fileSystemPaths = require('cordova-plugin-file.fileSystemPaths').file;
             } else {
@@ -355,11 +349,7 @@ Media.prototype.startRecord = function () {
                 recordFile = src.replace(fileSystemPaths.applicationDirectory, 'file:///');
 
                 // only can save files to valid `temporary` and `persistent` directories
-                if (
-                    recordFile.indexOf(':') !== -1
-                    && recordFile.indexOf(fileSystemPaths.cacheDirectory) === -1
-                    && recordFile.indexOf(fileSystemPaths.dataDirectory) === -1
-                ) {
+                if (recordFile.indexOf(':') !== -1 && recordFile.indexOf(fileSystemPaths.cacheDirectory) === -1 && recordFile.indexOf(fileSystemPaths.dataDirectory) === -1) {
                     sendErrorStatus(this.id, MediaError.MEDIA_ERR_ABORTED, 'Error: Resource for recording can only be saved at cordova.file.cacheDirectory or cordova.file.dataDirectory.');
                     return;
                 }
@@ -421,7 +411,7 @@ Media.prototype.startRecord = function () {
 
         window.navigator.mediaDevices.getUserMedia({ audio: true })
             .then(function (stream) {
-                return new window.MediaRecorder(stream, { mimeType: useMimeType, audioBitsPerSecond: 96000 })
+                return new window.MediaRecorder(stream, { mimeType: useMimeType, audioBitsPerSecond: 96000 });
             }).then(function (recorder) {
                 var chunks = [];
 
@@ -506,13 +496,13 @@ Media.prototype.startRecord = function () {
                                 function (e) {
                                     console.log('Failed to get file, auto fallback to blob url: ' + e.message);
                                     finishAsBlob();
-                                },
+                                }
                             );
                         },
                         function (e) {
                             console.log('Failed to request file system, auto fallback to blob url: ' + e.message);
                             finishAsBlob();
-                        },
+                        }
                     );
                 };
 
@@ -660,9 +650,25 @@ Media.onStatus = function (id, msgType, value) {
 /**
  * Browser depends on `MediaRecorder` support
  */
-Media.isRecordSupported = function () {
-    return typeof window.navigator.mediaDevices !== 'undefined'
-        && typeof window.navigator.mediaDevices.getUserMedia !== 'undefined';
+Media.isRecordSupported = function (win) {
+    if (typeof window.navigator.mediaDevices === 'undefined' || typeof window.navigator.mediaDevices.getUserMedia === 'undefined') {
+        setTimeout(function () {
+            win(false);
+        }, 0);
+
+        return;
+    }
+
+    // check if there is any input device like an microphone
+    window.navigator.mediaDevices.enumerateDevices()
+        .then(function (devices) {
+            return devices.filter(function (device) {
+                return device.kind === 'audioinput';
+            });
+        })
+        .then(function (audioDevices) {
+            win(audioDevices.length > 0);
+        });
 };
 
 module.exports = Media;

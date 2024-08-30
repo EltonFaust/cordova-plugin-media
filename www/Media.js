@@ -277,8 +277,10 @@ Media.onStatus = function (id, msgType, value) {
 /**
  * All native platforms support audio recording
  */
-Media.isRecordSupported = function () {
-    return true;
+Media.isRecordSupported = function (win) {
+    setTimeout(function () {
+        win(true);
+    }, 0);
 };
 
 module.exports = Media;
