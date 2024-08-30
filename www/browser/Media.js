@@ -137,7 +137,37 @@ function readyPlayer(media) {
     }
 
     switch (media.state) {
-        case Media.MEDIA_NONE:
+    case Media.MEDIA_NONE:
+        try {
+            media.node = createNode(media);
+        } catch (err) {
+            sendErrorStatus(id, MediaError.MEDIA_ERR_ABORTED);
+            return false;
+        }
+
+        try {
+            loadAudioFile(media);
+        } catch (e) {
+            sendErrorStatus(id, MediaError.MEDIA_ERR_ABORTED, e.message);
+            return false;
+        }
+
+        return true;
+    case Media.MEDIA_LOADING:
+        return false;
+    case Media.MEDIA_STARTING:
+    case Media.MEDIA_RUNNING:
+    case Media.MEDIA_PAUSED:
+        return true;
+    case Media.MEDIA_STOPPED:
+        // check if the src was changed, if changed, recreate the node
+        if (media.node && media.node.src != media.src) {
+            media.node.pause();
+            media.node = null;
+            media.duration = -1;
+        }
+
+        if (media.node === null) {
             try {
                 media.node = createNode(media);
             } catch (err) {
@@ -151,41 +181,11 @@ function readyPlayer(media) {
                 sendErrorStatus(id, MediaError.MEDIA_ERR_ABORTED, e.message);
                 return false;
             }
+        }
 
-            return true;
-        case Media.MEDIA_LOADING:
-            return false;
-        case Media.MEDIA_STARTING:
-        case Media.MEDIA_RUNNING:
-        case Media.MEDIA_PAUSED:
-            return true;
-        case Media.MEDIA_STOPPED:
-            // check if the src was changed, if changed, recreate the node
-            if (media.node && media.node.src != media.src) {
-                media.node.pause();
-                media.node = null;
-                media.duration = -1;
-            }
-
-            if (media.node === null) {
-                try {
-                    media.node = createNode(media);
-                } catch (err) {
-                    sendErrorStatus(id, MediaError.MEDIA_ERR_ABORTED);
-                    return false;
-                }
-
-                try {
-                    loadAudioFile(media);
-                } catch (e) {
-                    sendErrorStatus(id, MediaError.MEDIA_ERR_ABORTED, e.message);
-                    return false;
-                }
-            }
-
-            return true;
-        default:
-            sendErrorStatus(id, MediaError.MEDIA_ERR_ABORTED, 'Error: readyPlayer() called during invalid state: ' + media.state);
+        return true;
+    default:
+        sendErrorStatus(id, MediaError.MEDIA_ERR_ABORTED, 'Error: readyPlayer() called during invalid state: ' + media.state);
     }
 }
 
@@ -205,6 +205,10 @@ function sendErrorStatus(id, code, message) {
         code: code,
         message: message,
     });
+}
+
+function hasBaseRecordSupport() {
+    return typeof window.navigator.mediaDevices !== 'undefined' && typeof window.navigator.mediaDevices.getUserMedia !== 'undefined';
 }
 
 // Media messages
@@ -313,7 +317,7 @@ Media.prototype.getCurrentPosition = function (success, fail) {
  * Start recording audio file.
  */
 Media.prototype.startRecord = function () {
-    if (!Media.isRecordSupported()) {
+    if (!hasBaseRecordSupport()) {
         sendErrorStatus(this.id, MediaError.MEDIA_ERR_ABORTED, 'Error: Record is not supported in this device.');
         return;
     }
@@ -651,7 +655,8 @@ Media.onStatus = function (id, msgType, value) {
  * Browser depends on `MediaRecorder` support
  */
 Media.isRecordSupported = function (win) {
-    if (typeof window.navigator.mediaDevices === 'undefined' || typeof window.navigator.mediaDevices.getUserMedia === 'undefined') {
+    // check if the browser has the MediaRecord capability
+    if (!hasBaseRecordSupport()) {
         setTimeout(function () {
             win(false);
         }, 0);
