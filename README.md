@@ -607,7 +607,10 @@ To add this entry into the `info.plist`, you can use the `edit-config` tag in th
     - If is provided an non compatible path, it wont be able to record.
     - If is available to save the file, but fail to do so, it will fallback to `blob:`.
 
-- The plugin `cordova-plugin-file-transfer` can be used, but it doesn't support `blob:` path files, yet it can be sent to a server, but only manually:
+- The plugin `cordova-plugin-file-transfer` can be used, but it doesn't support the transfer of `blob:` files, yet it can be sent to a server, but only manually:
+
+        // after recorded, is the "src" an "blob:"?
+        // send the file with an alternative method
         if (myMedia.src.substr(0, 5) === 'blob:') {
             // first we get the blob: file content
             fetch(myMedia.src).then(function (response) {
@@ -615,18 +618,19 @@ To add this entry into the `info.plist`, you can use the `edit-config` tag in th
             }).then(function (blobContent) {
                 // then send it
                 var requestData = new FormData();
-                requestData.append('file', blobContent, 'my_record.webm');
+                requestData.append("file", blobContent, "my_record.webm");
 
                 fetch(
-                    'http://some.server.com/upload.php',
-                    { method: 'POST', body: requestData }
+                    "http://some.server.com/upload.php",
+                    { method: "POST", body: requestData }
                 ).then(function (response) {
                     // do something with the response
-                })
+                });
             });
 
             return;
         } else {
+            // "src" isn't an "blob:", can be sent by "cordova-plugin-file-transfer"
             var ft = new FileTransfer();
             var options = new FileUploadOptions();
             options.fileKey = "file";
