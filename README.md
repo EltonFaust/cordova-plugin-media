@@ -589,7 +589,15 @@ To add this entry into the `info.plist`, you can use the `edit-config` tag in th
 
 ### Browser Quirks
 
-- The record capabillity depends on the user's browser, it may or may not allow recordings and has any input device available, its capabillities can be checked:
+- __fileFallback__: Pass this option to the `startRecord` method to specify
+  if the record can fallback to blob:, default value is `true`,
+  in case of `false`, the plugin `cordova-plugin-file` will be required,
+  and it can limit the ability to save the record, so is not recomended:
+
+        var myMedia = new Media(cordova.file.cacheDirectory + "my_record.webm")
+        myMedia.startRecord({ fileFallback: false })
+
+- The record capabillity depends on the user's browser, it may or may not allow recordings and has any input device available, its capabillities can be checked by:
 
         Media.isRecordSupported(function (canRecord) {
             console.log("Is record supported? " + (canRecord ? "true" : "false"));

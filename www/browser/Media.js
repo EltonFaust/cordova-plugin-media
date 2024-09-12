@@ -115,7 +115,7 @@ function playMode(media) {
     case Media.MODE_PLAY:
         return true;
     case Media.MODE_RECORD:
-        sendErrorStatus(id, MediaError.MEDIA_ERR_ABORTED, 'Error: Can\'t play in record mode.');
+        sendErrorStatus(media.id, MediaError.MEDIA_ERR_ABORTED, 'Error: Can\'t play in record mode.');
         return false;
     default:
         if (console.error) {
@@ -141,7 +141,7 @@ function readyPlayer(media, callback) {
         try {
             media.node = createNode(media);
         } catch (err) {
-            sendErrorStatus(id, MediaError.MEDIA_ERR_ABORTED);
+            sendErrorStatus(media.id, MediaError.MEDIA_ERR_ABORTED);
             return callback(false);
         }
 
@@ -150,7 +150,7 @@ function readyPlayer(media, callback) {
                 return callback(true)
             }
 
-            sendErrorStatus(id, MediaError.MEDIA_ERR_ABORTED, result.message);
+            sendErrorStatus(media.id, MediaError.MEDIA_ERR_ABORTED, result.message);
             return callback(false);
         });
         return;
@@ -175,7 +175,7 @@ function readyPlayer(media, callback) {
         try {
             media.node = createNode(media);
         } catch (err) {
-            sendErrorStatus(id, MediaError.MEDIA_ERR_ABORTED);
+            sendErrorStatus(media.id, MediaError.MEDIA_ERR_ABORTED);
             return callback(false);
         }
 
@@ -184,12 +184,12 @@ function readyPlayer(media, callback) {
                 return callback(true)
             }
 
-            sendErrorStatus(id, MediaError.MEDIA_ERR_ABORTED, result.message);
+            sendErrorStatus(media.id, MediaError.MEDIA_ERR_ABORTED, result.message);
             return callback(false);
         });
         return;
     default:
-        sendErrorStatus(id, MediaError.MEDIA_ERR_ABORTED, 'Error: readyPlayer() called during invalid state: ' + media.state);
+        sendErrorStatus(media.id, MediaError.MEDIA_ERR_ABORTED, 'Error: readyPlayer() called during invalid state: ' + media.state);
     }
 }
 
@@ -200,7 +200,7 @@ function loadAudioFile(media, callback) {
 
     var src = media.src;
 
-    function setNodeSrc() {
+    function nodeLoadSrc() {
         media.node.src = src;
         media.node.load();
 
@@ -209,9 +209,9 @@ function loadAudioFile(media, callback) {
         callback(true);
     }
 
-    // normal url
-    if (/^(http|ftp)(s)?:\/\//.test(src) || src.indexOf('://') === -1) {
-        return setNodeSrc();
+    // streaming url
+    if (/^((http|https|rtsp|):\/\/|blob:)/.test(src) || src.indexOf('://') === -1) {
+        return nodeLoadSrc();
     }
 
     try {
@@ -226,12 +226,13 @@ function loadAudioFile(media, callback) {
         return callback(e);
     }
 
-    // resolve local file
+    // resolve local file to a playable url
     window.resolveLocalFileSystemURL(
         src,
         function (fileEntry) {
             src = fileEntry.toURL();
-            setNodeSrc();
+            media.src = src;
+            nodeLoadSrc();
         },
         function (e) {
             callback(e);
@@ -273,12 +274,14 @@ Media.MEDIA_MSG = ['None', 'Starting', 'Running', 'Paused', 'Stopped'];
  * Start or resume playing audio file.
  */
 Media.prototype.play = function () {
-    readyPlayer(this, function (isReady) {
+    var media = this;
+
+    readyPlayer(media, function (isReady) {
         if (!isReady) {
             return;
         }
 
-        this.node.play();
+        media.node.play();
     });
 };
 
@@ -299,17 +302,19 @@ Media.prototype.stop = function () {
  * Seek or jump to a new time in the track..
  */
 Media.prototype.seekTo = function (milliseconds) {
-    readyPlayer(this, function (isReady) {
+    var media = this;
+
+    readyPlayer(media, function (isReady) {
         if (!isReady) {
             return;
         }
 
         try {
             var p = milliseconds / 1000;
-            this.node.currentTime = p;
-            Media.onStatus(this.id, Media.MEDIA_POSITION, p);
+            media.node.currentTime = p;
+            Media.onStatus(media.id, Media.MEDIA_POSITION, p);
         } catch (err) {
-            Media.onStatus(this.id, Media.MEDIA_ERROR, err);
+            Media.onStatus(media.id, Media.MEDIA_ERROR, err);
         }
     });
 };
@@ -359,7 +364,7 @@ Media.prototype.getCurrentPosition = function (success, fail) {
 /**
  * Start recording audio file.
  */
-Media.prototype.startRecord = function () {
+Media.prototype.startRecord = function (options) {
     if (!hasBaseRecordSupport()) {
         sendErrorStatus(this.id, MediaError.MEDIA_ERR_ABORTED, 'Error: Record is not supported in this device.');
         return;
@@ -374,6 +379,8 @@ Media.prototype.startRecord = function () {
         var src = this.src && this.src.substr(0, 5) !== 'blob:' ? this.src : false;
 
         var fileSystemPaths;
+        // fallback to blob? default is `true`
+        var fileFallback = typeof options !== 'object' || !!options.fileFallback;
 
         try {
             // currently only available on chrome
@@ -387,6 +394,12 @@ Media.prototype.startRecord = function () {
             fileSystemPaths = null;
         }
 
+        // disabled fallback to blob but is not available the file plugin or is not set a src (auto fallback to blob)
+        if (!fileFallback && (!fileSystemPaths || !src)) {
+            sendErrorStatus(this.id, MediaError.MEDIA_ERR_ABORTED, 'Error: ');
+            return;
+        }
+
         var recordFile;
 
         if (src) {
@@ -394,6 +407,8 @@ Media.prototype.startRecord = function () {
                 // once is generated the url, it will be replaced the `file:///` with the a `cordova.file.applicationDirectory` (aka window.location.origin),
                 // to be able to re-record, mantaining the original file name, replace back the string
                 recordFile = src.replace(fileSystemPaths.applicationDirectory, 'file:///');
+                // to support cdvfile: protocol
+                recordFile = recordFile.replace('cdvfile://localhost/', 'filesystem:file://');
 
                 // only can save files to valid `temporary` and `persistent` directories
                 if (recordFile.indexOf(':') !== -1 && recordFile.indexOf(fileSystemPaths.cacheDirectory) === -1 && recordFile.indexOf(fileSystemPaths.dataDirectory) === -1) {
@@ -509,8 +524,23 @@ Media.prototype.startRecord = function () {
                         finish();
                     }
 
+                    function finishAsBlobOrAbort(message) {
+                        // if fallabck is disabled, send an abort error
+                        if (!fileFallback) {
+                            sendErrorStatus(_that.id, MediaError.MEDIA_ERR_ABORTED, 'Error: ' + message);
+                            finish();
+                            return;
+                        }
+
+                        if (console.warn) {
+                            console.warn('Auto fallback to blob url: ' + message);
+                        }
+
+                        finishAsBlob();
+                    }
+
                     // plugin `cordova-plugin-file` is not available, save as a `blob:` file
-                    if (!fileSystemPaths || !recordFile) {
+                    if (fileFallback && (!fileSystemPaths || !recordFile)) {
                         finishAsBlob();
                         return;
                     }
@@ -527,28 +557,35 @@ Media.prototype.startRecord = function () {
                                 { create: true, exclusive: false },
                                 function (fileEntry) {
                                     fileEntry.createWriter(function (fileWriter) {
+                                        var truncated = false;
+
                                         fileWriter.onwriteend = function () {
-                                            _that.src = fileEntry.toURL();
-                                            finish();
+                                            if (!truncated) {
+                                                // now that is truncated, write the content
+                                                truncated = true;
+                                                fileWriter.write(content);
+                                            } else {
+                                                _that.src = fileEntry.toURL();
+                                                finish();
+                                            }
                                         };
 
                                         fileWriter.onerror = function (e) {
-                                            console.log('Failed to write file, auto fallback to blob url: ' + e.message);
-                                            finishAsBlob();
+                                            finishAsBlobOrAbort('Failed to write file: ' + e.message);
                                         };
 
-                                        fileWriter.write(content);
+                                        // will truncate the file first (prevent re-write problems)
+                                        fileWriter.seek(0);
+                                        fileWriter.truncate(0);
                                     });
                                 },
                                 function (e) {
-                                    console.log('Failed to get file, auto fallback to blob url: ' + e.message);
-                                    finishAsBlob();
+                                    finishAsBlobOrAbort('Failed to get file: ' + e.message);
                                 }
                             );
                         },
                         function (e) {
-                            console.log('Failed to request file system, auto fallback to blob url: ' + e.message);
-                            finishAsBlob();
+                            finishAsBlobOrAbort('Failed to request file system: ' + e.message);
                         }
                     );
                 };
