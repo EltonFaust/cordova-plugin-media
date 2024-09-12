@@ -230,8 +230,9 @@ function loadAudioFile(media, callback) {
     window.resolveLocalFileSystemURL(
         src,
         function (fileEntry) {
-            src = fileEntry.toURL();
-            media.src = src;
+            media.src = fileEntry.toURL();
+            // force a query to reload local files, to prevent cache
+            src = media.src + '?__t=' + Date.now();
             nodeLoadSrc();
         },
         function (e) {
@@ -409,6 +410,8 @@ Media.prototype.startRecord = function (options) {
                 recordFile = src.replace(fileSystemPaths.applicationDirectory, 'file:///');
                 // to support cdvfile: protocol
                 recordFile = recordFile.replace('cdvfile://localhost/', 'filesystem:file://');
+                // remove any query or hash from the url
+                recordFile = recordFile.replace(/[?#].*$/, '');
 
                 // only can save files to valid `temporary` and `persistent` directories
                 if (recordFile.indexOf(':') !== -1 && recordFile.indexOf(fileSystemPaths.cacheDirectory) === -1 && recordFile.indexOf(fileSystemPaths.dataDirectory) === -1) {
