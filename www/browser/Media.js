@@ -131,9 +131,9 @@ function playMode(media) {
  * attempts to initialize the media player for playback
  * @return false if player not ready, reports if in wrong mode or state
  */
-function readyPlayer(media) {
+function readyPlayer(media, callback) {
     if (!playMode(media)) {
-        return false;
+        return callback(false);
     }
 
     switch (media.state) {
@@ -142,23 +142,24 @@ function readyPlayer(media) {
             media.node = createNode(media);
         } catch (err) {
             sendErrorStatus(id, MediaError.MEDIA_ERR_ABORTED);
-            return false;
+            return callback(false);
         }
 
-        try {
-            loadAudioFile(media);
-        } catch (e) {
-            sendErrorStatus(id, MediaError.MEDIA_ERR_ABORTED, e.message);
-            return false;
-        }
+        loadAudioFile(media, function (result) {
+            if (result === true) {
+                return callback(true)
+            }
 
-        return true;
+            sendErrorStatus(id, MediaError.MEDIA_ERR_ABORTED, result.message);
+            return callback(false);
+        });
+        return;
     case Media.MEDIA_LOADING:
-        return false;
+        return callback(false);
     case Media.MEDIA_STARTING:
     case Media.MEDIA_RUNNING:
     case Media.MEDIA_PAUSED:
-        return true;
+        return callback(true);
     case Media.MEDIA_STOPPED:
         // check if the src was changed, if changed, recreate the node
         if (media.node && media.node.src != media.src) {
@@ -167,37 +168,75 @@ function readyPlayer(media) {
             media.duration = -1;
         }
 
-        if (media.node === null) {
-            try {
-                media.node = createNode(media);
-            } catch (err) {
-                sendErrorStatus(id, MediaError.MEDIA_ERR_ABORTED);
-                return false;
-            }
-
-            try {
-                loadAudioFile(media);
-            } catch (e) {
-                sendErrorStatus(id, MediaError.MEDIA_ERR_ABORTED, e.message);
-                return false;
-            }
+        if (media.node !== null) {
+            return callback(true);
         }
 
-        return true;
+        try {
+            media.node = createNode(media);
+        } catch (err) {
+            sendErrorStatus(id, MediaError.MEDIA_ERR_ABORTED);
+            return callback(false);
+        }
+
+        loadAudioFile(media, function (result) {
+            if (result === true) {
+                return callback(true)
+            }
+
+            sendErrorStatus(id, MediaError.MEDIA_ERR_ABORTED, result.message);
+            return callback(false);
+        });
+        return;
     default:
         sendErrorStatus(id, MediaError.MEDIA_ERR_ABORTED, 'Error: readyPlayer() called during invalid state: ' + media.state);
     }
 }
 
-function loadAudioFile(media) {
+function loadAudioFile(media, callback) {
     if (!media.src) {
-        throw new Error('Error: no source provided');
+        return callback(new Error('Error: no source provided'));
     }
 
-    media.node.src = media.src;
-    media.node.load();
+    var src = media.src;
 
-    setState(media, Media.MEDIA_STARTING);
+    function setNodeSrc() {
+        media.node.src = src;
+        media.node.load();
+
+        setState(media, Media.MEDIA_STARTING);
+
+        callback(true);
+    }
+
+    // normal url
+    if (/^(http|ftp)(s)?:\/\//.test(src) || src.indexOf('://') === -1) {
+        return setNodeSrc();
+    }
+
+    try {
+        // currently only available on chrome
+        if (window.webkitRequestFileSystem && window.webkitResolveLocalFileSystemURL) {
+            // if the plugin `cordova-plugin-file` is available, will try to save the file
+            require('cordova-plugin-file.fileSystemPaths');
+        } else {
+            throw new Error('Error: browser not supported');
+        }
+    } catch (e) {
+        return callback(e);
+    }
+
+    // resolve local file
+    window.resolveLocalFileSystemURL(
+        src,
+        function (fileEntry) {
+            src = fileEntry.toURL();
+            setNodeSrc();
+        },
+        function (e) {
+            callback(e);
+        }
+    );
 }
 
 function sendErrorStatus(id, code, message) {
@@ -234,11 +273,13 @@ Media.MEDIA_MSG = ['None', 'Starting', 'Running', 'Paused', 'Stopped'];
  * Start or resume playing audio file.
  */
 Media.prototype.play = function () {
-    if (!readyPlayer(this)) {
-        return;
-    }
+    readyPlayer(this, function (isReady) {
+        if (!isReady) {
+            return;
+        }
 
-    this.node.play();
+        this.node.play();
+    });
 };
 
 /**
@@ -258,17 +299,19 @@ Media.prototype.stop = function () {
  * Seek or jump to a new time in the track..
  */
 Media.prototype.seekTo = function (milliseconds) {
-    if (!readyPlayer(this)) {
-        return;
-    }
+    readyPlayer(this, function (isReady) {
+        if (!isReady) {
+            return;
+        }
 
-    try {
-        var p = milliseconds / 1000;
-        this.node.currentTime = p;
-        Media.onStatus(this.id, Media.MEDIA_POSITION, p);
-    } catch (err) {
-        Media.onStatus(this.id, Media.MEDIA_ERROR, err);
-    }
+        try {
+            var p = milliseconds / 1000;
+            this.node.currentTime = p;
+            Media.onStatus(this.id, Media.MEDIA_POSITION, p);
+        } catch (err) {
+            Media.onStatus(this.id, Media.MEDIA_ERROR, err);
+        }
+    });
 };
 
 /**
