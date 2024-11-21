@@ -377,7 +377,7 @@ Media.prototype.startRecord = function (options) {
         break;
     case Media.MODE_NONE:
         var _that = this;
-        var src = this.src && this.src.substr(0, 5) !== 'blob:' ? this.src : false;
+        var src = typeof this.src === 'string' && this.src.substr(0, 5) !== 'blob:' ? this.src : false;
 
         var fileSystemPaths;
         // fallback to blob? default is `true`
@@ -395,9 +395,9 @@ Media.prototype.startRecord = function (options) {
             fileSystemPaths = null;
         }
 
-        // disabled fallback to blob but is not available the file plugin or is not set a src (auto fallback to blob)
+        // disabled fallback to blob and filesystem record is not available or is not set a src (auto fallback to blob)
         if (!fileFallback && (!fileSystemPaths || !src)) {
-            sendErrorStatus(this.id, MediaError.MEDIA_ERR_ABORTED, 'Error: ');
+            sendErrorStatus(this.id, MediaError.MEDIA_ERR_ABORTED, 'Error: Filesystem record not available and fallback disabled');
             return;
         }
 
@@ -470,7 +470,7 @@ Media.prototype.startRecord = function (options) {
         this._recordFileMime = useMimeType;
 
         // no url defined, src used only to determine mime type
-        if (recordFile.indexOf(':') === -1) {
+        if (typeof recordFile !== 'string' || recordFile.indexOf(':') === -1) {
             recordFile = false;
         }
 

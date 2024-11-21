@@ -384,6 +384,16 @@ function playAudio(url) {
         var myMedia = new Media("audio/beer.mp3")
         myMedia.play()  // first looks for file in www/audio/beer.mp3 then in <application>/documents/tmp/audio/beer.mp3
 
+### Browser Quirks
+
+- __Content-Security-Policy__: to play a recorded audio it may require
+  some change on the content of `Content-Security-Policy` header or meta tag,
+  adding `filesystem:` and `blob:` to the `media-src` directive will allow
+  to play any audio recorded on the plugin:
+
+        <meta http-equiv="Content-Security-Policy" content="default-src 'self' data: https://ssl.gstatic.com 'unsafe-eval' filesystem:; style-src 'self' 'unsafe-inline'; media-src * filesystem: blob:; img-src 'self' data: content:;">
+
+
 ## media.release
 
 Releases the underlying operating system's audio resources.
@@ -608,7 +618,7 @@ To add this entry into the `info.plist`, you can use the `edit-config` tag in th
 - If the `src` property is omited (eg: `"src": null`), it will fallback to record with the mime the browser chooses, in this case the `src` will be update to an `blob:something`.
 
 - If the `src` is a simple file (eg: `"src": "my_record.m4a"`), it will fallback to `blob:` but will try to record it as an `audio/mp4`
-    - The extension on the file will force an mime type tha can be: `.webm = audio/webm` , `.mp4/.m4a = audio/mp4` or `.ogg = audio/ogg`.
+    - The extension on the file will force an mime type that can be: `.webm = audio/webm` , `.mp4/.m4a = audio/mp4` or `.ogg = audio/ogg`.
     - If no extension is provided, it will fallback to the mime type `audio/webm` or the browser choice if `audio/webm` is not available.
 
 - If the `src` is a full path (eg: `cordova.file.cacheDirectory + "my_record.m4a"` or `cordova.file.dataDirectory + "my_record.m4a"`) and the plugin `cordova-plugin-file` is available, it will try to save the file.
@@ -617,6 +627,7 @@ To add this entry into the `info.plist`, you can use the `edit-config` tag in th
 
 - The plugin `cordova-plugin-file-transfer` can be used, but it doesn't support the transfer of `blob:` files, yet it can be sent to a server, but only manually:
 
+        var uploadUrl = "http://some.server.com/upload.php";
         // after recorded, is the "src" an "blob:"?
         // send the file with an alternative method
         if (myMedia.src.substr(0, 5) === 'blob:') {
@@ -629,14 +640,19 @@ To add this entry into the `info.plist`, you can use the `edit-config` tag in th
                 requestData.append("file", blobContent, "my_record.webm");
 
                 fetch(
-                    "http://some.server.com/upload.php",
+                    uploadUrl,
                     { method: "POST", body: requestData }
                 ).then(function (response) {
-                    // do something with the response
+                    var result = new FileUploadResult();
+                    result.bytesSent = blobContent.size;
+                    result.responseCode = response.status;
+                    result.response = response.body;
+                    win(result);
+                }).catch(function (e) {
+                    var error = new FileTransferError(FileTransferError.CONNECTION_ERR, myMedia.src, uploadUrl, e.status, e.body);
+                    fail(error);
                 });
             });
-
-            return;
         } else {
             // "src" isn't an "blob:", can be sent by "cordova-plugin-file-transfer"
             var ft = new FileTransfer();
@@ -645,7 +661,7 @@ To add this entry into the `info.plist`, you can use the `edit-config` tag in th
             options.fileName = 'my_record.webm';
             options.mimeType = "audio/webm";
 
-            ft.upload(myMedia.src, encodeURI("http://some.server.com/upload.php"), win, fail, options);
+            ft.upload(myMedia.src, encodeURI(uploadUrl), win, fail, options);
         }
 
 ## media.stop
